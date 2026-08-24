@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Tooling caches
+.ruff_cache/
+.pytest_cache/
+.coverage
+
+# Lightning / training artifacts
+lightning_logs/
+checkpoints/
+*.ckpt
+
+# Secrets
+kaggle.json
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# The plain training CSV is 77 MB. The gzipped copy beside it is tracked
+# instead, and load_raw reads whichever is present.
+data/raw/train.csv
+
+# Kaggle's unlabeled leaderboard files. The project never reads either one, and
+# together they add 51 MB to the repository for no reviewer benefit.
+data/raw/test.csv
+data/raw/sample_submission.csv
+
+# Note: data/raw/train.csv.gz, reports/figures/ and uv.lock are tracked so the
+# project is reproducible and self-contained for review.

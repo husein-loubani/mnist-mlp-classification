@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mnist_mlp"
+version = "0.1.0"
+description = "Multi-layer perceptron for MNIST digit classification, built with PyTorch Lightning"
+requires-python = ">=3.10,<3.13"
+# uv resolves these into uv.lock, which is committed. pyproject declares intent,
+# the lockfile pins the exact versions the reported results came from, so there
+# is no second dependency file to drift out of step.
+dependencies = [
+    "torch>=2.4",
+    "lightning>=2.4",
+    "torchmetrics>=1.4",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "scikit-learn>=1.5",
+    "matplotlib>=3.9",
+    "seaborn>=0.13",
+    "kaggle>=1.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "jupyterlab>=4.0",
+    "ruff>=0.13",
+    "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["mnist_mlp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = ["E501"]
