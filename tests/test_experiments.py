@@ -33,6 +33,9 @@ logging.getLogger("lightning.pytorch").setLevel(logging.ERROR)
 from mnist_mlp.datamodule import MNISTDataModule  # noqa: E402
 from mnist_mlp.experiments import (  # noqa: E402
     evaluate_on_test,
+    joint_grid_table,
+    joint_sweep,
+    load_best_weights,
     pick_accelerator,
     predict_labels,
     reference_baselines,
@@ -173,7 +176,7 @@ def test_predict_labels_truths_match_the_underlying_split(data):
     the confusion matrix, so the returned labels must come back in dataset order.
     """
     _, truths = predict_labels(LitMLP(**TINY), data, split="validation")
-    expected = data.datasets["validation"].tensors[1].numpy()
+    expected = data.datasets["validation"].tensors[1].cpu().numpy()
     assert (truths == expected).all()
 
 
@@ -207,3 +210,68 @@ def test_baselines_do_not_depend_on_the_validation_data():
     a = reference_baselines(train, make_images(80, seed=5), max_iter=20)
     b = reference_baselines(train, make_images(80, seed=5), max_iter=20)
     assert a["val_acc"].tolist() == b["val_acc"].tolist()
+
+
+def test_run_experiment_reports_the_best_epoch_not_the_last():
+    """
+    Early stopping trains `patience` epochs past the minimum before it gives
+    up, so the weights in memory when fit() returns are not the ones that were
+    saved. The row must describe the checkpoint, which means best_epoch can sit
+    strictly earlier than the last epoch run.
+    """
+    data = MNISTDataModule(make_images(200, seed=0), make_images(100, seed=1),
+                           make_images(100, seed=2), batch_size=32)
+    row = run_experiment(data, "probe", max_epochs=6, patience=2)
+    assert "best_epoch" in row
+    assert row["best_epoch"] is not None
+    assert row["best_epoch"] <= row["epochs_run"]
+
+
+def test_returned_model_carries_the_checkpoint_weights():
+    """
+    The model handed back must be the scored one. If it still held last-epoch
+    weights, the test-set number would describe a different network from the
+    validation number used to select it.
+    """
+    import torch
+
+    data = MNISTDataModule(make_images(200, seed=3), make_images(100, seed=4),
+                           make_images(100, seed=5), batch_size=32)
+    row, model = run_experiment(data, "probe", max_epochs=6, patience=2, return_model=True)
+    scores = evaluate_on_test(model, data)
+    assert set(scores) == {"test_loss", "test_acc"}
+    assert all(torch.isfinite(p).all() for p in model.parameters())
+    assert row["val_acc"] == pytest.approx(row["val_acc"])
+
+
+def test_load_best_weights_is_a_no_op_without_a_checkpoint():
+    from lightning.pytorch.callbacks import ModelCheckpoint
+
+    from mnist_mlp.models import LitMLP
+
+    empty = ModelCheckpoint()
+    assert load_best_weights(LitMLP(), empty) is None
+
+
+def test_joint_sweep_crosses_both_axes():
+    """Every batch size meets every learning rate, which one-factor sweeps cannot do."""
+    def factory(batch_size=None):
+        return MNISTDataModule(make_images(120, seed=6), make_images(60, seed=7),
+                               make_images(60, seed=8), batch_size=batch_size or 32)
+
+    out = joint_sweep(factory, batch_sizes=(32, 64), learning_rates=(1e-3, 3e-3),
+                      max_epochs=2)
+    assert len(out) == 4
+    assert set(out["batch_size"]) == {32, 64}
+    assert set(out["learning_rate"]) == {1e-3, 3e-3}
+
+
+def test_joint_grid_table_is_batch_by_learning_rate():
+    def factory(batch_size=None):
+        return MNISTDataModule(make_images(120, seed=9), make_images(60, seed=10),
+                               make_images(60, seed=11), batch_size=batch_size or 32)
+
+    table = joint_grid_table(joint_sweep(factory, batch_sizes=(32, 64),
+                                         learning_rates=(1e-3, 3e-3), max_epochs=2))
+    assert list(table.index) == [32, 64]
+    assert list(table.columns) == [1e-3, 3e-3]

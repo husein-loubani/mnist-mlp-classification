@@ -32,9 +32,15 @@ def test_training_loader_shuffles_and_evaluation_loaders_do_not():
     test in order keeps their metrics comparable between runs.
     """
     data = module(300)
-    assert data.train_dataloader().sampler.__class__.__name__ == "RandomSampler"
-    assert data.val_dataloader().sampler.__class__.__name__ == "SequentialSampler"
-    assert data.test_dataloader().sampler.__class__.__name__ == "SequentialSampler"
+    # Behavior, not the sampler class: two passes over the training loader must
+    # differ in order, and the evaluation loaders must not.
+    first = torch.cat([y for _, y in data.train_dataloader()])
+    second = torch.cat([y for _, y in data.train_dataloader()])
+    assert not torch.equal(first, second)
+    evaluation = torch.cat([y for _, y in data.val_dataloader()])
+    assert torch.equal(evaluation, torch.cat([y for _, y in data.val_dataloader()]))
+    held_out = torch.cat([y for _, y in data.test_dataloader()])
+    assert torch.equal(held_out, torch.cat([y for _, y in data.test_dataloader()]))
 
 
 def test_no_images_are_dropped_by_batching():
@@ -44,6 +50,6 @@ def test_no_images_are_dropped_by_batching():
 
 
 def test_normalized_pixels_are_centered_near_zero():
-    x = module(400).datasets["train"].tensors[0]
+    x = module(400).datasets["train"].tensors[0].cpu()
     assert abs(float(x.mean())) < 0.15
     assert 0.5 < float(x.std()) < 2.0

@@ -20,6 +20,7 @@ dependencies = [
     "matplotlib>=3.9",
     "seaborn>=0.13",
     "kaggle>=1.6",
+    "optuna>=4.9.0",
 ]
 
 [project.optional-dependencies]

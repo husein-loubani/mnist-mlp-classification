@@ -14,6 +14,8 @@ end, for the single configuration that validation chose.
 from __future__ import annotations
 
 import time
+from contextlib import ExitStack
+from tempfile import TemporaryDirectory
 
 import pandas as pd
 import torch
@@ -22,15 +24,19 @@ from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 
 from mnist_mlp.config import (
     EARLY_STOPPING_PATIENCE,
+    JOINT_BATCH_GRID,
+    JOINT_LR_GRID,
     LOGREG_MAX_ITER,
     MAX_EPOCHS,
     MONITOR_METRIC,
     MONITOR_MODE,
+    OPTUNA_MAX_EPOCHS,
+    OPTUNA_TRIALS,
     PIXEL_MAX,
     RANDOM_SEED,
     SEED_GRID,
 )
-from mnist_mlp.datamodule import MNISTDataModule
+from mnist_mlp.datamodule import MNISTDataModule, resolve_device
 from mnist_mlp.dataset import to_arrays
 from mnist_mlp.models import LitMLP
 
@@ -43,12 +49,25 @@ def pick_accelerator() -> str:
     `cuda`. Both are GPU training, and the notebook prints which one actually
     ran rather than claiming one.
     """
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+    return resolve_device().type
 
+
+
+def load_best_weights(model: LitMLP, checkpoint: ModelCheckpoint) -> int | None:
+    """
+    Copy the best saved epoch's weights back into `model`, in place.
+
+    Returns the epoch that checkpoint came from, or None when nothing was
+    saved (a run of a single epoch that never completed a validation pass).
+    Loading in place rather than returning a fresh object keeps every later
+    reference to `model` pointing at the network that was actually scored.
+    """
+    path = checkpoint.best_model_path
+    if not path:
+        return None
+    saved = torch.load(path, map_location="cpu", weights_only=False)
+    model.load_state_dict(saved["state_dict"])
+    return saved.get("epoch")
 
 def run_experiment(
     data: MNISTDataModule,
@@ -58,6 +77,7 @@ def run_experiment(
     patience: int = EARLY_STOPPING_PATIENCE,
     checkpoint_dir: str | None = None,
     verbose: bool = False,
+    return_model: bool = False,
     **model_kwargs,
 ) -> dict:
     """
@@ -71,40 +91,52 @@ def run_experiment(
     seed_everything(seed, workers=True)
 
     model = LitMLP(**model_kwargs)
-    callbacks = [EarlyStopping(monitor=MONITOR_METRIC, mode=MONITOR_MODE, patience=patience)]
-    if checkpoint_dir:
-        callbacks.append(
-            ModelCheckpoint(
-                dirpath=checkpoint_dir, filename=name, monitor=MONITOR_METRIC,
-                mode=MONITOR_MODE, save_top_k=1,
-            )
+    # Checkpointing is unconditional. Early stopping deliberately trains past the
+    # best epoch before it gives up, so the weights left in memory when fit()
+    # returns are `patience` epochs the wrong side of the minimum. Scoring those
+    # would report a model nobody would choose to keep.
+    with ExitStack() as stack:
+        target = checkpoint_dir or stack.enter_context(TemporaryDirectory())
+        checkpoint = ModelCheckpoint(
+            dirpath=target, filename=name, monitor=MONITOR_METRIC,
+            mode=MONITOR_MODE, save_top_k=1,
+        )
+        callbacks = [
+            EarlyStopping(monitor=MONITOR_METRIC, mode=MONITOR_MODE, patience=patience),
+            checkpoint,
+        ]
+
+        trainer = Trainer(
+            max_epochs=max_epochs,
+            accelerator=pick_accelerator(),
+            devices=1,
+            callbacks=callbacks,
+            logger=False,
+            enable_progress_bar=verbose,
+            enable_model_summary=False,
+            deterministic=False,   # MPS lacks deterministic kernels for some ops
         )
 
-    trainer = Trainer(
-        max_epochs=max_epochs,
-        accelerator=pick_accelerator(),
-        devices=1,
-        callbacks=callbacks,
-        logger=False,
-        enable_progress_bar=verbose,
-        enable_model_summary=False,
-        deterministic=False,   # MPS lacks deterministic kernels for some ops
-    )
+        started = time.perf_counter()
+        trainer.fit(model, datamodule=data)
+        elapsed = time.perf_counter() - started
 
-    started = time.perf_counter()
-    trainer.fit(model, datamodule=data)
-    elapsed = time.perf_counter() - started
+        # Load the saved best epoch back over the in-memory weights, so the row
+        # below and any later use of `model` describe the same network.
+        best_epoch = load_best_weights(model, checkpoint)
+        scores = trainer.validate(model, datamodule=data, verbose=False)[0]
 
-    scores = trainer.validate(model, datamodule=data, verbose=False)[0]
-    return {
+    row = {
         "name": name,
         **{k: v for k, v in model_kwargs.items() if k != "class_weights"},
         "val_loss": round(scores["val_loss"], 4),
         "val_acc": round(scores["val_acc"], 4),
         "epochs_run": trainer.current_epoch,
+        "best_epoch": best_epoch,
         "parameters": model.count_parameters(),
         "seconds": round(elapsed, 1),
     }
+    return (row, model) if return_model else row
 
 
 def sweep(
@@ -175,6 +207,78 @@ def reference_baselines(train: pd.DataFrame, validation: pd.DataFrame,
         })
     return pd.DataFrame(rows)
 
+
+def joint_sweep(data_factory, batch_sizes=JOINT_BATCH_GRID, learning_rates=JOINT_LR_GRID,
+                baseline: dict | None = None, max_epochs: int = MAX_EPOCHS) -> pd.DataFrame:
+    """
+    Every batch size against every learning rate, rather than one axis at a time.
+
+    A one-factor sweep holds the learning rate fixed while the batch size moves,
+    so it measures the batch size *at that one rate* and silently attributes the
+    interaction to the batch. Crossing the two axes separates them: each row of
+    the returned table is one batch size, each column one rate, and the best
+    rate is allowed to differ between rows.
+    """
+    baseline = dict(baseline or {})
+    baseline.pop("learning_rate", None)
+    rows = []
+    for batch_size in batch_sizes:
+        for learning_rate in learning_rates:
+            row = run_experiment(
+                data_factory(batch_size), f"b{batch_size}_lr{learning_rate:g}",
+                max_epochs=max_epochs, learning_rate=learning_rate, **baseline,
+            )
+            row["batch_size"] = batch_size
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def joint_grid_table(results: pd.DataFrame, metric: str = "val_acc") -> pd.DataFrame:
+    """The joint sweep as batch size by learning rate, for reading off interactions."""
+    return results.pivot(index="batch_size", columns="learning_rate", values=metric)
+
+
+def optuna_search(data_factory, n_trials: int = OPTUNA_TRIALS, seed: int = RANDOM_SEED,
+                  max_epochs: int = OPTUNA_MAX_EPOCHS) -> tuple[pd.DataFrame, dict]:
+    """
+    Search the axes jointly with Optuna instead of one at a time.
+
+    A grid over six axes is the product of their lengths and mostly spends its
+    budget in regions the first few trials already ruled out. Optuna's TPE
+    sampler models which regions produced good scores and draws later trials
+    from there, so the same number of runs covers the promising part of the
+    space far more densely. The seed is fixed so the search is reproducible.
+    """
+    import optuna
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    def objective(trial):
+        batch_size = trial.suggest_categorical("batch_size", list(JOINT_BATCH_GRID))
+        params = {
+            "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
+            "dropout": trial.suggest_float("dropout", 0.0, 0.5, step=0.1),
+            "activation": trial.suggest_categorical("activation", ["relu", "gelu", "elu"]),
+            "optimizer": trial.suggest_categorical("optimizer", ["adam", "adamw", "sgd_momentum"]),
+            "hidden_layers": trial.suggest_categorical("hidden_layers", [(128,), (256, 128), (512, 256)]),
+        }
+        row = run_experiment(data_factory(batch_size), f"trial{trial.number}",
+                             max_epochs=max_epochs, **params)
+        trial.set_user_attr("val_acc", row["val_acc"])
+        trial.set_user_attr("epochs_run", row["epochs_run"])
+        return row["val_loss"]
+
+    study = optuna.create_study(direction="minimize",
+                                sampler=optuna.samplers.TPESampler(seed=seed))
+    study.optimize(objective, n_trials=n_trials)
+
+    frame = pd.DataFrame([
+        {"trial": t.number, "val_loss": round(t.value, 4),
+         "val_acc": t.user_attrs.get("val_acc"), **t.params}
+        for t in study.trials if t.value is not None
+    ]).sort_values("val_loss").reset_index(drop=True)
+    return frame, study.best_params
+
 def evaluate_on_test(model: LitMLP, data: MNISTDataModule) -> dict:
     """
     The single test-set evaluation, run once for the chosen configuration.
@@ -203,7 +307,9 @@ def predict_labels(model: LitMLP, data: MNISTDataModule, split: str = "test"):
         for x, y in loader:
             logits = model(x.to(device))
             predictions.append(logits.argmax(dim=1).cpu())
-            truths.append(y)
+            # The labels now come off the training device too, so they need the
+            # same trip back to the host before numpy will touch them.
+            truths.append(y.cpu())
     return torch.cat(predictions).numpy(), torch.cat(truths).numpy()
 
 

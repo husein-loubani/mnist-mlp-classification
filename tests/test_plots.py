@@ -19,11 +19,12 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 
 from mnist_mlp.dataset import class_balance  # noqa: E402
-from mnist_mlp.plots import (  # noqa: E402
+from mnist_mlp.plots import (
     plot_class_balance,
     plot_confusion_matrix,
     plot_digit_grid,
     plot_ink_distribution,
+    plot_joint_grid,  # noqa: E402
     plot_learning_curves,
     plot_misclassified,
     plot_sweep,
@@ -113,3 +114,13 @@ def test_save_figure_writes_a_png(tmp_path):
     save_figure(fig, "example", tmp_path)
     written = tmp_path / "example.png"
     assert written.exists() and written.stat().st_size > 0
+
+
+def test_joint_grid_heatmap_is_labeled():
+    table = pd.DataFrame([[0.90, 0.95], [0.92, 0.91]],
+                         index=[32, 64], columns=[1e-3, 3e-3])
+    fig = plot_joint_grid(table)
+    ax = fig.axes[0]
+    assert ax.get_xlabel() and ax.get_ylabel() and ax.get_title()
+    assert [t.get_text() for t in ax.get_yticklabels()] == ["32", "64"]
+    plt.close(fig)

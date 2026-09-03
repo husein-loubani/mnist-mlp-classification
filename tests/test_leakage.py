@@ -97,7 +97,7 @@ def test_the_data_module_applies_one_transform_everywhere():
 
     raw = held[pixel_columns(held)].to_numpy(dtype=np.float32) / 255.0
     expected = (raw - module.mean) / module.std
-    actual = module.datasets["validation"].tensors[0].numpy()
+    actual = module.datasets["validation"].tensors[0].cpu().numpy()
     assert np.allclose(actual, expected, atol=1e-6)
 
 
@@ -105,7 +105,7 @@ def test_labels_stay_attached_to_their_images_through_the_pipeline():
     """A shuffle that moved pixels but not labels would silently destroy training."""
     df = make_images(120, seed=8)
     module = MNISTDataModule(df, df, df)
-    _, labels = module.datasets["train"].tensors
+    _, labels = (t.cpu() for t in module.datasets["train"].tensors)
     assert labels.tolist() == df["label"].tolist()
 
 

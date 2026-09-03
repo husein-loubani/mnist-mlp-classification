@@ -213,3 +213,36 @@ def plot_misclassified(df: pd.DataFrame, y_true: np.ndarray, y_pred: np.ndarray,
     fig.suptitle("Misclassified test images (true → predicted)", fontsize=13)
     fig.tight_layout()
     return fig
+
+def plot_joint_grid(table: pd.DataFrame, title: str = "Validation accuracy",
+                    fmt: str = "{:.4f}") -> Figure:
+    """
+    The joint batch-size by learning-rate table as a heatmap.
+
+    A one-factor sweep can only show a line per axis. The grid shows where the
+    good region actually sits, and whether the best learning rate shifts as the
+    batch size grows, which is the interaction a line chart hides.
+    """
+    fig, ax = plt.subplots(figsize=(1.6 * len(table.columns) + 3, 0.7 * len(table.index) + 2.2))
+    values = table.to_numpy(dtype=float)
+    im = ax.imshow(values, cmap="viridis", aspect="auto")
+
+    ax.set_xticks(range(len(table.columns)))
+    ax.set_xticklabels([f"{c:g}" for c in table.columns])
+    ax.set_yticks(range(len(table.index)))
+    ax.set_yticklabels(table.index)
+    ax.set_xlabel("Learning rate")
+    ax.set_ylabel("Batch size")
+    ax.set_title(title)
+
+    best = values.max()
+    for i in range(values.shape[0]):
+        for j in range(values.shape[1]):
+            v = values[i, j]
+            ax.text(j, i, fmt.format(v), ha="center", va="center",
+                    fontsize=9, weight="bold" if v == best else "normal",
+                    color="white" if v < values.mean() else "black")
+    fig.colorbar(im, ax=ax, shrink=0.85)
+    fig.tight_layout()
+    return fig
+

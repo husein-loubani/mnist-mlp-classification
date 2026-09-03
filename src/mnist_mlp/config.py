@@ -81,3 +81,15 @@ CMAP_SEQ = "Blues"
 # Reference baselines. 1000 iterations is where multinomial logistic regression
 # stops moving on this data; 200 leaves it short and raises a ConvergenceWarning.
 LOGREG_MAX_ITER = 1000
+
+# Joint search. The one-factor-at-a-time sweeps above hold every other axis at
+# the baseline, which cannot see an interaction: learning rate and batch size
+# are the textbook pair, since a larger batch averages more samples per step and
+# needs a proportionally larger step to cover the same ground per epoch.
+JOINT_BATCH_GRID = (32, 64, 128, 256, 512)
+JOINT_LR_GRID = (3e-4, 1e-3, 3e-3)
+OPTUNA_TRIALS = 20
+# A search pass runs on a shorter budget than the final fit: it only has to rank
+# configurations, not squeeze the last fraction out of the winner, which is then
+# retrained at full length in section 9.
+OPTUNA_MAX_EPOCHS = 15
