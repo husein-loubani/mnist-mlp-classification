@@ -93,3 +93,15 @@ OPTUNA_TRIALS = 20
 # configurations, not squeeze the last fraction out of the winner, which is then
 # retrained at full length in section 9.
 OPTUNA_MAX_EPOCHS = 15
+
+# The Optuna search space, here rather than inside the search function so every
+# grid in this project lives in one file and can be read without opening code.
+OPTUNA_SPACE = {
+    "batch_size": JOINT_BATCH_GRID,
+    "learning_rate": (1e-4, 1e-2),
+    "dropout": (0.0, 0.5),
+    "dropout_step": 0.1,
+    "activation": ("relu", "gelu", "elu"),
+    "optimizer": ("adam", "adamw", "sgd_momentum"),
+    "hidden_layers": ((128,), (256, 128), (512, 256)),
+}

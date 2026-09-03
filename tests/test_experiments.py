@@ -13,37 +13,26 @@ tests check that the plumbing is correct, not that the model is good.
 
 from __future__ import annotations
 
-import logging
-import warnings
-
 import pandas as pd
 import pytest
 import torch
-from lightning.fabric.utilities.warnings import PossibleUserWarning
 
-# Two named filters, not a blanket ignore. Lightning's operational advice (a GPU
-# present but unused, dataloader worker counts) is not a finding here, and the
-# pytree deprecation belongs to the library rather than to this project. Anything
-# else, including a numerical or convergence warning from our own code, still
-# reaches the output.
-warnings.filterwarnings("ignore", category=PossibleUserWarning)
-warnings.filterwarnings("ignore", message=r".*treespec.*", category=FutureWarning)
-logging.getLogger("lightning.pytorch").setLevel(logging.ERROR)
-
-from mnist_mlp.datamodule import MNISTDataModule  # noqa: E402
-from mnist_mlp.experiments import (  # noqa: E402
+from mnist_mlp.datamodule import MNISTDataModule
+from mnist_mlp.experiments import (
     evaluate_on_test,
     joint_grid_table,
     joint_sweep,
     load_best_weights,
+    per_class_report,
     pick_accelerator,
     predict_labels,
     reference_baselines,
     run_experiment,
     sweep,
+    top_confusions,
 )
-from mnist_mlp.models import LitMLP  # noqa: E402
-from tests.conftest import make_images  # noqa: E402
+from mnist_mlp.models import LitMLP
+from tests.conftest import make_images
 
 TINY = dict(hidden_layers=(8,), dropout=0.0)
 
@@ -291,3 +280,41 @@ def test_joint_grid_table_is_batch_by_learning_rate():
                                          learning_rates=(1e-3, 3e-3), max_epochs=2))
     assert list(table.index) == [32, 64]
     assert list(table.columns) == [1e-3, 3e-3]
+
+
+def test_per_class_report_counts_errors_as_integers():
+    """
+    The error column must be a difference of counts, not a rounded accuracy
+    multiplied back by the support. Nine of ten correct rounds to 0.9 exactly,
+    but a support that does not divide cleanly is where the derivation slips.
+    """
+    import numpy as np
+
+    y_true = np.array([0] * 7 + [1] * 3)
+    y_pred = np.array([0] * 6 + [1] + [1] * 3)      # one 0 predicted as 1
+    out = per_class_report(y_true, y_pred)
+    assert out.loc[0, "images"] == 7
+    assert out.loc[0, "errors"] == 1
+    assert out.loc[1, "errors"] == 0
+    assert out["errors"].dtype.kind in "iu"
+
+
+def test_per_class_report_accuracy_is_recall():
+    import numpy as np
+
+    y_true = np.array([0, 0, 0, 0, 1, 1])
+    y_pred = np.array([0, 0, 0, 1, 1, 1])
+    out = per_class_report(y_true, y_pred)
+    assert out.loc[0, "accuracy"] == pytest.approx(0.75)
+    assert out.loc[1, "accuracy"] == pytest.approx(1.0)
+
+
+def test_top_confusions_excludes_the_diagonal_and_sorts():
+    import numpy as np
+
+    y_true = np.array([3] * 5 + [8] * 3 + [1] * 4)
+    y_pred = np.array([5] * 4 + [3] + [1] * 3 + [1] * 4)
+    out = top_confusions(y_true, y_pred, n=5)
+    assert (out["true"] != out["predicted"]).all(), "a correct prediction is not a confusion"
+    assert out["count"].is_monotonic_decreasing
+    assert out.iloc[0].to_dict() == {"true": 3, "predicted": 5, "count": 4}

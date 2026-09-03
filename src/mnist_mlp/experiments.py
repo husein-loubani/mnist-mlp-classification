@@ -31,6 +31,7 @@ from mnist_mlp.config import (
     MONITOR_METRIC,
     MONITOR_MODE,
     OPTUNA_MAX_EPOCHS,
+    OPTUNA_SPACE,
     OPTUNA_TRIALS,
     PIXEL_MAX,
     RANDOM_SEED,
@@ -253,14 +254,17 @@ def optuna_search(data_factory, n_trials: int = OPTUNA_TRIALS, seed: int = RANDO
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+    space = OPTUNA_SPACE
+
     def objective(trial):
-        batch_size = trial.suggest_categorical("batch_size", list(JOINT_BATCH_GRID))
+        batch_size = trial.suggest_categorical("batch_size", list(space["batch_size"]))
+        low, high = space["learning_rate"]
         params = {
-            "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
-            "dropout": trial.suggest_float("dropout", 0.0, 0.5, step=0.1),
-            "activation": trial.suggest_categorical("activation", ["relu", "gelu", "elu"]),
-            "optimizer": trial.suggest_categorical("optimizer", ["adam", "adamw", "sgd_momentum"]),
-            "hidden_layers": trial.suggest_categorical("hidden_layers", [(128,), (256, 128), (512, 256)]),
+            "learning_rate": trial.suggest_float("learning_rate", low, high, log=True),
+            "dropout": trial.suggest_float("dropout", *space["dropout"], step=space["dropout_step"]),
+            "activation": trial.suggest_categorical("activation", list(space["activation"])),
+            "optimizer": trial.suggest_categorical("optimizer", list(space["optimizer"])),
+            "hidden_layers": trial.suggest_categorical("hidden_layers", list(space["hidden_layers"])),
         }
         row = run_experiment(data_factory(batch_size), f"trial{trial.number}",
                              max_epochs=max_epochs, **params)
@@ -312,6 +316,43 @@ def predict_labels(model: LitMLP, data: MNISTDataModule, split: str = "test"):
             truths.append(y.cpu())
     return torch.cat(predictions).numpy(), torch.cat(truths).numpy()
 
+
+
+def per_class_report(y_true, y_pred) -> pd.DataFrame:
+    """
+    Support, accuracy and error count for each digit, read off the confusion matrix.
+
+    The counts come straight from sklearn rather than from a groupby, and the
+    error column is the difference of two integers rather than a rounded
+    accuracy multiplied back by the support: that derivation can land a whole
+    image out when the accuracy is rounded for display first.
+    """
+    from sklearn.metrics import confusion_matrix
+
+    labels = sorted(set(y_true.tolist()) | set(y_pred.tolist()))
+    matrix = confusion_matrix(y_true, y_pred, labels=labels)
+    support = matrix.sum(axis=1)
+    correct = matrix.diagonal()
+    return pd.DataFrame(
+        {"images": support, "accuracy": (correct / support).round(4),
+         "errors": support - correct},
+        index=pd.Index(labels, name="digit"),
+    )
+
+
+def top_confusions(y_true, y_pred, n: int = 8) -> pd.DataFrame:
+    """The n most frequent true-to-predicted mistakes, off the same matrix."""
+    from sklearn.metrics import confusion_matrix
+
+    labels = sorted(set(y_true.tolist()) | set(y_pred.tolist()))
+    matrix = confusion_matrix(y_true, y_pred, labels=labels)
+    rows = [
+        {"true": labels[i], "predicted": labels[j], "count": int(matrix[i, j])}
+        for i in range(len(labels)) for j in range(len(labels))
+        if i != j and matrix[i, j] > 0
+    ]
+    return (pd.DataFrame(rows).sort_values("count", ascending=False)
+            .head(n).reset_index(drop=True))
 
 def seed_stability(
     data,
