@@ -29,14 +29,14 @@ The tuning moved the result by well under a point over a sensible default, which
 | Activation | Modern activations tie; sigmoid needs far more epochs, a vanishing gradient visible at two layers |
 | Learning rate | The sharpest axis. At 0.1 training collapses to near the 10% random floor |
 | Dropout | A moderate rate helps; heavy dropout costs accuracy and epochs |
-| Architecture | Capacity is not the constraint. One layer of 128 units matches a network six times larger |
+| Architecture | Capacity is not the constraint. One layer of 128 units matches a network with almost fifteen times the parameters |
 | Loss | Cross-entropy and NLL are identical by construction; label smoothing wins on accuracy but its loss is not comparable |
 
 ### One axis at a time is not enough
 
 Those sweeps each move one axis and hold the rest at a baseline, which cannot see an interaction. Crossing learning rate with batch size finds one: a gradient averaged over 512 images is quieter than one averaged over 32 and tolerates a longer step, so the best rate is not the same at both ends of the range. The interaction runs in both directions: raising the rate costs the smallest batch about nine tenths of a point and *gains* the largest batch about seven tenths. The flat batch-size reading above is a property of the single rate that sweep held fixed, and the best combination turns out to sit at the small-batch end it could not reach.
 
-The project therefore searches jointly as well: a full batch-size by learning-rate grid, and an Optuna study that varies six axes at once using a TPE sampler rather than a grid.
+The project therefore searches jointly as well: a full batch-size by learning-rate grid, and an Optuna study that varies six axes at once using a TPE sampler rather than a grid. Both winners are entered into the final selection as candidates, each at its own batch size, where they place second and third of seven — ahead of four of the five configurations the per-axis sweeps produced. The one that beats them wins on the loss function, which is the single axis neither joint search varied.
 
 ### Best epoch, not last epoch
 
@@ -59,7 +59,7 @@ What limits the model is the `Flatten` layer. Turning the image into 784 indepen
 │   ├── models.py                   <- the configurable MLP and its Lightning wrapper
 │   ├── experiments.py              <- one-config runner, sweep loop, test evaluation
 │   └── plots.py                    <- every figure
-├── tests/                          <- 68 tests, including leakage proofs
+├── tests/                          <- 104 tests, including leakage proofs
 ├── references/data_dictionary.md
 ├── reports/figures/
 ├── pyproject.toml                  <- dependencies and ruff config
@@ -84,7 +84,7 @@ Model selection uses validation throughout. The test split is opened once, for t
 ```bash
 cd "Module 4/Sprint 1"
 uv sync --extra dev
-uv run pytest -q          # 68 tests
+uv run pytest -q          # 104 tests
 uv run ruff check .       # package, tests, and notebook
 uv run jupyter lab notebooks/mnist_mlp.ipynb
 ```

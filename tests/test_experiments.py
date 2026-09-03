@@ -227,21 +227,37 @@ def test_run_experiment_reports_the_best_epoch_not_the_last():
     assert row["best_epoch"] <= row["epochs_run"]
 
 
-def test_returned_model_carries_the_checkpoint_weights():
+def test_returned_model_carries_the_checkpoint_weights(tmp_path):
     """
-    The model handed back must be the scored one. If it still held last-epoch
-    weights, the test-set number would describe a different network from the
-    validation number used to select it.
+    Every parameter of the returned model must equal the saved checkpoint.
+
+    This is the test that actually guards the fix. Asserting that `best_epoch`
+    is reported, or that the metrics are finite, passes just as happily when the
+    weights are never loaded, because those values are read from the checkpoint
+    file rather than from the network. Only comparing the live parameters
+    against the file can tell the two situations apart: with early stopping the
+    in-memory weights are `patience` epochs later than the ones on disk, so if
+    the load is removed these tensors diverge.
     """
     import torch
 
     data = MNISTDataModule(make_images(200, seed=3), make_images(100, seed=4),
                            make_images(100, seed=5), batch_size=32)
-    row, model = run_experiment(data, "probe", max_epochs=6, patience=2, return_model=True)
+    row, model = run_experiment(data, "probe", max_epochs=8, patience=2,
+                                return_model=True, checkpoint_dir=str(tmp_path))
+
+    saved = list(tmp_path.glob("*.ckpt"))
+    assert saved, "no checkpoint was written"
+    state = torch.load(saved[0], map_location="cpu", weights_only=False)["state_dict"]
+
+    live = model.state_dict()
+    assert set(live) == set(state)
+    for name, tensor in live.items():
+        assert torch.equal(tensor.cpu(), state[name].cpu()), f"{name} is not the saved epoch"
+
     scores = evaluate_on_test(model, data)
     assert set(scores) == {"test_loss", "test_acc"}
-    assert all(torch.isfinite(p).all() for p in model.parameters())
-    assert row["val_acc"] == pytest.approx(row["val_acc"])
+    assert row["best_epoch"] is not None
 
 
 def test_load_best_weights_is_a_no_op_without_a_checkpoint():
